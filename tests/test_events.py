@@ -145,3 +145,23 @@ def test_upload_event_sha_mismatch(client):
         files={"photo": ("photo.jpg", photo_data, "image/jpeg")}
     )
     assert res.status_code == 422
+
+def test_swagger_docs_and_openapi(client):
+    # Test root redirect to /docs
+    res_root = client.get("/", follow_redirects=False)
+    assert res_root.status_code in [302, 307]
+    assert res_root.headers["location"] == "/docs"
+
+    # Test Swagger UI HTML
+    res_docs = client.get("/docs")
+    assert res_docs.status_code == 200
+    assert "swagger-ui" in res_docs.text.lower()
+
+    # Test OpenAPI JSON schema includes HTTPBearer security
+    res_openapi = client.get("/openapi.json")
+    assert res_openapi.status_code == 200
+    schema = res_openapi.json()
+    assert "components" in schema
+    assert "securitySchemes" in schema["components"]
+    assert "HTTPBearer" in schema["components"]["securitySchemes"]
+

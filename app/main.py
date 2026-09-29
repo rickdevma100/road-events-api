@@ -9,7 +9,8 @@ from typing import Optional, List
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Depends, HTTPException, UploadFile, File, Form, Header, status, BackgroundTasks
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, RedirectResponse
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
 from sqlalchemy import text, desc
 
@@ -145,27 +146,76 @@ async def lifespan(app: FastAPI):
         pass
 
 
+tags_metadata = [
+    {
+        "name": "Events",
+        "description": "Upload and manage road event hazard photos and telemetry (potholes, shocks).",
+    },
+    {
+        "name": "Rides",
+        "description": "Real-time ride telemetry synchronization, speed tracking, and emergency incident alerts.",
+    },
+    {
+        "name": "Spatial Queries",
+        "description": "PostGIS spatial queries: nearby radius search and viewport bounding-box lookup.",
+    },
+    {
+        "name": "Diagnostics",
+        "description": "System health checks and probe status.",
+    },
+]
+
 app = FastAPI(
     title="Road Events API",
-    version="1.0.0",
-    description="FastAPI Backend for Road-Event Capture App & Smart Bulb Automation",
+    version="1.0.3",
+    description="""
+# 🚗 Road Events & Smart Bulb Automation API
+
+Interactive REST API documentation for the **Road-Events** IoT platform.
+
+### 🔐 Authentication
+Protected endpoints require a **Bearer Token**.
+- Click the **Authorize 🔓** button below.
+- Enter device token: `secret-device-token-12345`
+- Click **Authorize** to test endpoints directly in Swagger UI.
+""",
+    openapi_tags=tags_metadata,
+    docs_url="/docs",
+    redoc_url="/redoc",
+    openapi_url="/openapi.json",
     lifespan=lifespan
 )
 
-def verify_token(authorization: Optional[str] = Header(None)) -> str:
+security = HTTPBearer(auto_error=False)
+
+def verify_token(
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
+    authorization: Optional[str] = Header(None)
+) -> str:
     """Validates the Bearer token configured for mobile client authorization."""
-    if not authorization or not authorization.startswith("Bearer "):
+    token = None
+    if credentials:
+        token = credentials.credentials
+    elif authorization and authorization.startswith("Bearer "):
+        token = authorization.split("Bearer ")[1].strip()
+
+    if not token:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Missing or malformed Authorization header. Expected 'Bearer <token>'"
         )
-    token = authorization.split("Bearer ")[1].strip()
     if token != settings.DEVICE_TOKEN:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid device token"
         )
     return token
+
+
+@app.get("/", include_in_schema=False)
+def root_redirect():
+    """Redirects base path to Swagger UI documentation."""
+    return RedirectResponse(url="/docs")
 
 
 @app.get("/healthz", tags=["Diagnostics"])
