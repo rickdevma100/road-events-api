@@ -27,6 +27,8 @@ class IncidentSchema(BaseModel):
     detected_at: datetime
     source: Optional[str] = "automatic"
     cleared_at: Optional[datetime] = None
+    latitude: Optional[float] = None
+    longitude: Optional[float] = None
 
 
 class RideStatusUpdateRequest(BaseModel):

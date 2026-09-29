@@ -29,6 +29,15 @@ class Settings(BaseSettings):
     # Pulse duration (seconds)
     INCIDENT_PULSE_DURATION_SEC: float = 60.0
 
+    # SMTP / Alert notification configuration
+    SMTP_HOST: str = "smtp.gmail.com"
+    SMTP_PORT: int = 587
+    SMTP_USER: str = "rickdev.ma100@gmail.com"
+    SMTP_PASSWORD: str = ""
+    ALERT_ADMIN_EMAIL: str = "rickdev.ma100@gmail.com"
+    ALERT_RECIPIENT_EMAIL: str = "sayantikasaha400@gmail.com"
+    ALERT_EMAIL_ENABLED: bool = True
+
     class Config:
         env_file = ".env"
         extra = "ignore"

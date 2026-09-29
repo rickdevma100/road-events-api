@@ -8,7 +8,7 @@ from datetime import datetime, timezone, timedelta
 from typing import Optional, List
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Depends, HTTPException, UploadFile, File, Form, Header, status
+from fastapi import FastAPI, Depends, HTTPException, UploadFile, File, Form, Header, status, BackgroundTasks
 from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 from sqlalchemy import text, desc
@@ -23,6 +23,7 @@ from app.schemas import (
 )
 from app.storage import storage_service
 from app.bulb_service import get_bulb_adapter
+from app.email_service import send_alert_email
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 logger = logging.getLogger("main")
@@ -276,6 +277,7 @@ async def upload_event(
 def update_ride_status(
     ride_id: uuid.UUID,
     payload: RideStatusUpdateRequest,
+    background_tasks: BackgroundTasks,
     token: str = Depends(verify_token),
     db: Session = Depends(get_db)
 ):
@@ -334,11 +336,27 @@ def update_ride_status(
 
     # Handle incident payload if present
     if payload.incident:
+        is_new_active_alert = (
+            payload.incident.state == "active"
+            and (ride.alert_state != "active" or str(ride.alert_id) != str(payload.incident.alert_id))
+        )
         ride.alert_id = payload.incident.alert_id
         ride.alert_state = payload.incident.state
         ride.alert_detected_at = payload.incident.detected_at
         ride.alert_source = payload.incident.source
         ride.alert_cleared_at = payload.incident.cleared_at
+
+        if is_new_active_alert:
+            logger.info(f"Triggering emergency alert email for alert {payload.incident.alert_id} (source={payload.incident.source})")
+            background_tasks.add_task(
+                send_alert_email,
+                alert_id=str(payload.incident.alert_id),
+                source=payload.incident.source or "manual",
+                detected_at=payload.incident.detected_at.isoformat(),
+                latitude=payload.incident.latitude,
+                longitude=payload.incident.longitude,
+                speed_kmh=payload.speed_kmh,
+            )
 
     # 3. Compute desired bulb state
     bulb_state = db.query(BulbState).filter_by(id=1).first()
