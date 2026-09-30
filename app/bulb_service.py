@@ -1,3 +1,4 @@
+import time
 import logging
 from abc import ABC, abstractmethod
 from typing import Dict, Any, Optional
@@ -91,21 +92,89 @@ class MockBulbAdapter(BaseBulbAdapter):
         return True
 
 
+import socket
+from concurrent.futures import ThreadPoolExecutor
+
+def discover_bulb_ip(base_subnet="192.168.0", port=6668, timeout=0.15):
+    """Fast concurrent scan to find the bulb IP if DHCP reassigns it."""
+    found_ips = []
+    def check_ip(ip):
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            s.settimeout(timeout)
+            if s.connect_ex((ip, port)) == 0:
+                found_ips.append(ip)
+            s.close()
+        except Exception:
+            pass
+
+    targets = [f"{base_subnet}.{i}" for i in range(1, 255)]
+    with ThreadPoolExecutor(max_workers=50) as executor:
+        executor.map(check_ip, targets)
+
+    return found_ips[0] if found_ips else None
+
+
 class TuyaBulbAdapter(BaseBulbAdapter):
     """
     Physical smart bulb adapter using TinyTuya (tested with Wipro 9W RGB, protocol 3.5).
+    Includes socket verification, subnet discovery, and non-blocking offline resilience.
     """
     def __init__(self):
+        self.dev_id = settings.BULB_DEVICE_ID
+        self.ip = settings.BULB_IP
+        self.local_key = settings.BULB_LOCAL_KEY
+        self.version = float(settings.BULB_PROTOCOL)
+        self.auto_discover = True
+        self._last_offline_check = 0.0
+        self._is_online = False
+        self._init_device()
+
+    def _init_device(self):
         self.device = tinytuya.BulbDevice(
-            dev_id=settings.BULB_DEVICE_ID,
-            address=settings.BULB_IP,
-            local_key=settings.BULB_LOCAL_KEY,
-            version=float(settings.BULB_PROTOCOL)
+            self.dev_id,
+            self.ip,
+            self.local_key,
+            version=self.version
         )
-        self.device.set_socketPersistent(True)
-        self.device.set_socketTimeout(3)
+        self.device.set_socketPersistent(False)
+        self.device.set_socketTimeout(2)
+
+    def verify_connection(self) -> bool:
+        """Fast check if bulb is reachable at self.ip; auto-scans if DHCP reassigned."""
+        now = time.time()
+        # If recently checked as offline (< 5s ago), don't stall with repeated scans
+        if not self._is_online and (now - self._last_offline_check < 5.0):
+            return False
+
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            s.settimeout(0.3)
+            reachable = (s.connect_ex((self.ip, 6668)) == 0)
+            s.close()
+        except Exception:
+            reachable = False
+
+        if not reachable and self.auto_discover:
+            logger.info(f"[TuyaBulb] Bulb not responding at {self.ip}. Auto-scanning local network...")
+            new_ip = discover_bulb_ip()
+            if new_ip:
+                logger.info(f"[TuyaBulb] Discovered bulb at new IP: {new_ip}")
+                self.ip = new_ip
+                self._init_device()
+                reachable = True
+            else:
+                self._last_offline_check = now
+                self._is_online = False
+                logger.warning("[TuyaBulb] Bulb not found on local network. Is physical wall switch ON?")
+                return False
+
+        self._is_online = reachable
+        return reachable
 
     def get_state(self) -> Dict[str, Any]:
+        if not self.verify_connection():
+            return {"power": False, "error": "Bulb unreachable / physical switch is OFF"}
         try:
             status = self.device.status()
             dps = status.get("dps", {}) if isinstance(status, dict) else {}
@@ -120,26 +189,28 @@ class TuyaBulbAdapter(BaseBulbAdapter):
             return {"power": False, "error": str(e)}
 
     def set_power(self, power: bool) -> bool:
+        if not self.verify_connection():
+            return False
         try:
-            payload = self.device.generate_payload(tinytuya.CONTROL, {"20": power})
-            self.device.send(payload)
-            logger.info(f"[TuyaBulb] Power set to {power}")
+            res = self.device.set_value("20", power)
+            logger.info(f"[TuyaBulb] Power set to {power} (result: {res})")
             return True
         except Exception as e:
             logger.error(f"[TuyaBulb] Failed to set power: {e}")
             return False
 
     def set_color(self, color_name: str) -> bool:
+        if not self.verify_connection():
+            return False
         hex_val = COLOR_HEX_MAP.get(color_name.lower(), COLOR_HEX_MAP["red"])
         try:
-            # Set switch=True, mode='colour', and colour_data_v2
-            payload = self.device.generate_payload(tinytuya.CONTROL, {
+            payload = {
                 "20": True,
                 "21": "colour",
                 "24": hex_val
-            })
-            self.device.send(payload)
-            logger.info(f"[TuyaBulb] Color set to {color_name} (hex: {hex_val})")
+            }
+            res = self.device.set_multiple_values(payload)
+            logger.info(f"[TuyaBulb] Color set to {color_name} (hex: {hex_val}, result: {res})")
             return True
         except Exception as e:
             logger.error(f"[TuyaBulb] Failed to set color {color_name}: {e}")
@@ -149,6 +220,8 @@ class TuyaBulbAdapter(BaseBulbAdapter):
         return self.set_power(False)
 
     def restore(self, snapshot: Optional[Dict[str, Any]]) -> bool:
+        if not self.verify_connection():
+            return False
         if not snapshot or not snapshot.get("power", False):
             return self.turn_off()
         try:
@@ -160,8 +233,7 @@ class TuyaBulbAdapter(BaseBulbAdapter):
                 dps["21"] = snapshot["mode"]
                 if "brightness" in snapshot:
                     dps["22"] = snapshot["brightness"]
-            payload = self.device.generate_payload(tinytuya.CONTROL, dps)
-            self.device.send(payload)
+            self.device.set_multiple_values(dps)
             return True
         except Exception as e:
             logger.error(f"[TuyaBulb] Failed to restore snapshot: {e}")

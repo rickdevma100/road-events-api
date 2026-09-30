@@ -88,33 +88,33 @@ async def bulb_controller_loop():
                     if bulb_state.pulse_deadline and now <= bulb_state.pulse_deadline:
                         # 1 second ON, 1 second OFF
                         if int(time.time()) % 2 == 0:
-                            bulb.set_color("red")
+                            await asyncio.to_thread(bulb.set_color, "red")
                         else:
-                            bulb.set_power(False)
+                            await asyncio.to_thread(bulb.set_power, False)
                         bulb_state.applied_mode = "alert_pulse"
                     else:
                         # 60s pulse finished -> transition to solid red until explicitly cleared
-                        bulb.set_color("red")
+                        await asyncio.to_thread(bulb.set_color, "red")
                         bulb_state.applied_mode = "red_solid"
                     db.commit()
 
                 elif desired != bulb_state.applied_mode or bulb_state.applied_version < bulb_state.desired_version:
                     success = False
                     if desired == "green":
-                        success = bulb.set_color("green")
+                        success = await asyncio.to_thread(bulb.set_color, "green")
                     elif desired == "yellow":
-                        success = bulb.set_color("yellow")
+                        success = await asyncio.to_thread(bulb.set_color, "yellow")
                     elif desired == "red":
-                        success = bulb.set_color("red")
+                        success = await asyncio.to_thread(bulb.set_color, "red")
                     elif desired == "restore_off":
                         snapshot = {
                             "power": bulb_state.pre_ride_power,
                             "brightness": bulb_state.pre_ride_brightness,
                             "color": bulb_state.pre_ride_color
                         }
-                        success = bulb.restore(snapshot)
+                        success = await asyncio.to_thread(bulb.restore, snapshot)
                     else:
-                        success = bulb.turn_off()
+                        success = await asyncio.to_thread(bulb.turn_off)
 
                     if success:
                         bulb_state.applied_mode = desired
@@ -414,8 +414,8 @@ def update_ride_status(
         bulb_state = BulbState(id=1, desired_mode="restore_off", desired_version=1)
         db.add(bulb_state)
 
-    # Take ownership of bulb if no current controlling ride or this is the controlling ride
-    if bulb_state.controlling_ride_id is None or bulb_state.controlling_ride_id == ride_id:
+    # Take ownership of bulb if active alert, no current controlling ride, or this is the controlling ride
+    if ride.alert_state == "active" or bulb_state.controlling_ride_id is None or bulb_state.controlling_ride_id == ride_id:
         bulb_state.controlling_ride_id = ride_id
 
         # Determine target mode
