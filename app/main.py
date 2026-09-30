@@ -79,6 +79,7 @@ async def bulb_controller_loop():
                                 logger.info(f"Ride {ride.ride_id} speed went stale. Switching bulb to restore_off.")
                                 bulb_state.desired_mode = "restore_off"
                                 bulb_state.desired_version += 1
+                                bulb_state.controlling_ride_id = None
                                 db.commit()
 
                 desired = bulb_state.desired_mode
@@ -414,8 +415,21 @@ def update_ride_status(
         bulb_state = BulbState(id=1, desired_mode="restore_off", desired_version=1)
         db.add(bulb_state)
 
-    # Take ownership of bulb if active alert, no current controlling ride, or this is the controlling ride
-    if ride.alert_state == "active" or bulb_state.controlling_ride_id is None or bulb_state.controlling_ride_id == ride_id:
+    # Determine if this ride can take ownership of the bulb
+    can_control = False
+    if bulb_state.controlling_ride_id is None or bulb_state.controlling_ride_id == ride_id:
+        can_control = True
+    elif ride.alert_state == "active":
+        can_control = True
+    else:
+        # Take ownership if previous controlling ride has ended or become stale (>15s without update)
+        prev_ride = db.query(RideStatus).filter_by(ride_id=bulb_state.controlling_ride_id).first()
+        if not prev_ride or prev_ride.ride_state == "ended":
+            can_control = True
+        elif prev_ride.observed_at and (now - prev_ride.observed_at).total_seconds() > settings.STALE_SPEED_TIMEOUT_SEC:
+            can_control = True
+
+    if can_control:
         bulb_state.controlling_ride_id = ride_id
 
         # Determine target mode
@@ -424,7 +438,6 @@ def update_ride_status(
             if bulb_state.desired_mode != "alert_pulse":
                 bulb_state.desired_mode = "alert_pulse"
                 bulb_state.desired_version += 1
-                # If alert arrived within 2 minutes of detection, set 60s pulse; else solid red directly
                 alert_age = (now - ride.alert_detected_at).total_seconds() if ride.alert_detected_at else 0
                 if alert_age <= 120.0:
                     bulb_state.pulse_deadline = now + timedelta(seconds=settings.INCIDENT_PULSE_DURATION_SEC)
@@ -433,8 +446,10 @@ def update_ride_status(
         elif ride.ride_state == "ended":
             bulb_state.desired_mode = "restore_off"
             bulb_state.desired_version += 1
+            bulb_state.pulse_deadline = None
             bulb_state.controlling_ride_id = None
         else:
+            bulb_state.pulse_deadline = None
             # Normal ride state: only apply if clock skew is valid
             if clock_skew_valid:
                 target_mode = "green"
