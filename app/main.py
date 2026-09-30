@@ -66,11 +66,19 @@ async def bulb_controller_loop():
                 # Check stale speed for active ride
                 if bulb_state.controlling_ride_id:
                     ride = db.query(RideStatus).filter_by(ride_id=bulb_state.controlling_ride_id).first()
-                    if ride and ride.ride_state == "active":
+                    if not ride or ride.ride_state == "ended":
+                        if bulb_state.desired_mode != "restore_off":
+                            logger.info(f"Ride {bulb_state.controlling_ride_id} ended. Switching bulb to restore_off.")
+                            bulb_state.desired_mode = "restore_off"
+                            bulb_state.desired_version += 1
+                        bulb_state.controlling_ride_id = None
+                        db.commit()
+                    elif ride.ride_state == "active":
                         # Speed stale timeout: 15 seconds
                         speed_stale = False
-                        if ride.last_valid_speed_at:
-                            speed_stale = (now - ride.last_valid_speed_at).total_seconds() > settings.STALE_SPEED_TIMEOUT_SEC
+                        ref_time = ride.last_valid_speed_at or ride.observed_at
+                        if ref_time:
+                            speed_stale = (now - ref_time).total_seconds() > settings.STALE_SPEED_TIMEOUT_SEC
 
                         # Stale condition only resets if NO unresolved incident exists
                         has_active_incident = (ride.alert_state == "active")
@@ -79,8 +87,8 @@ async def bulb_controller_loop():
                                 logger.info(f"Ride {ride.ride_id} speed went stale. Switching bulb to restore_off.")
                                 bulb_state.desired_mode = "restore_off"
                                 bulb_state.desired_version += 1
-                                bulb_state.controlling_ride_id = None
-                                db.commit()
+                            bulb_state.controlling_ride_id = None
+                            db.commit()
 
                 desired = bulb_state.desired_mode
 
@@ -426,8 +434,10 @@ def update_ride_status(
         prev_ride = db.query(RideStatus).filter_by(ride_id=bulb_state.controlling_ride_id).first()
         if not prev_ride or prev_ride.ride_state == "ended":
             can_control = True
-        elif prev_ride.observed_at and (now - prev_ride.observed_at).total_seconds() > settings.STALE_SPEED_TIMEOUT_SEC:
-            can_control = True
+        else:
+            prev_ref_time = prev_ride.last_valid_speed_at or prev_ride.observed_at
+            if prev_ref_time and (now - prev_ref_time).total_seconds() > settings.STALE_SPEED_TIMEOUT_SEC:
+                can_control = True
 
     if can_control:
         bulb_state.controlling_ride_id = ride_id
