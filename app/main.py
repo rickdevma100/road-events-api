@@ -89,6 +89,21 @@ async def bulb_controller_loop():
                                 bulb_state.desired_version += 1
                             bulb_state.controlling_ride_id = None
                             db.commit()
+                        elif bulb_state.event_red_deadline and now >= bulb_state.event_red_deadline:
+                            bulb_state.event_red_deadline = None
+                            if not has_active_incident and bulb_state.desired_mode == "red":
+                                target_mode = "yellow"
+                                if ride.motion_state in ["starting", "slow"]:
+                                    target_mode = "yellow"
+                                elif ride.motion_state == "moving":
+                                    target_mode = "green"
+                                elif ride.motion_state == "stopped":
+                                    target_mode = "red"
+                                if bulb_state.desired_mode != target_mode:
+                                    logger.info(f"Event red hold expired for ride {ride.ride_id}. Reverting bulb to {target_mode}.")
+                                    bulb_state.desired_mode = target_mode
+                                    bulb_state.desired_version += 1
+                                    db.commit()
 
                 desired = bulb_state.desired_mode
 
@@ -320,6 +335,16 @@ async def upload_event(
         photo_path=photo_path
     )
     db.add(new_event)
+    
+    # If a ride is controlling the bulb, trigger a 5s event red hold
+    bulb_state = db.query(BulbState).filter_by(id=1).first()
+    if bulb_state and bulb_state.controlling_ride_id and bulb_state.desired_mode != "alert_pulse":
+        now_utc = datetime.now(timezone.utc)
+        bulb_state.event_red_deadline = now_utc + timedelta(seconds=5)
+        if bulb_state.desired_mode != "red":
+            bulb_state.desired_mode = "red"
+            bulb_state.desired_version += 1
+
     db.commit()
 
     return JSONResponse(
@@ -457,20 +482,30 @@ def update_ride_status(
             bulb_state.desired_mode = "restore_off"
             bulb_state.desired_version += 1
             bulb_state.pulse_deadline = None
+            bulb_state.event_red_deadline = None
             bulb_state.controlling_ride_id = None
         else:
             bulb_state.pulse_deadline = None
+            if getattr(payload, "event_active", False):
+                bulb_state.event_red_deadline = now + timedelta(seconds=5)
+
+            is_event_red = bool(bulb_state.event_red_deadline and now < bulb_state.event_red_deadline)
+
             # Normal ride state: only apply if clock skew is valid
             if clock_skew_valid:
-                target_mode = "green"
-                if ride.motion_state in ["starting", "moving"]:
-                    target_mode = "green"
-                elif ride.motion_state == "slow":
+                target_mode = "yellow"
+                if is_event_red:
+                    target_mode = "red"
+                elif ride.motion_state in ["starting", "slow"]:
                     target_mode = "yellow"
+                elif ride.motion_state == "moving":
+                    target_mode = "green"
                 elif ride.motion_state == "stopped":
                     target_mode = "red"
                 elif ride.motion_state == "unknown":
                     target_mode = bulb_state.desired_mode  # Retain previous
+                else:
+                    target_mode = "yellow"
 
                 if bulb_state.desired_mode != target_mode:
                     bulb_state.desired_mode = target_mode

@@ -39,6 +39,7 @@ class RideStatusUpdateRequest(BaseModel):
     last_valid_speed_at: Optional[datetime] = None
     motion_state: str = Field(..., pattern="^(starting|moving|slow|stopped|unknown)$")
     incident: Optional[IncidentSchema] = None
+    event_active: Optional[bool] = False
 
 
 class RideStatusResponse(BaseModel):

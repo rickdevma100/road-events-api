@@ -73,6 +73,7 @@ class BulbState(Base):
     desired_mode = Column(String(32), nullable=False, default="restore_off")  # green, yellow, red, alert_pulse, restore_off
     desired_version = Column(Integer, nullable=False, default=1)
     pulse_deadline = Column(DateTime(timezone=True), nullable=True)
+    event_red_deadline = Column(DateTime(timezone=True), nullable=True)
 
     # Pre-ride state snapshot for restoration
     pre_ride_power = Column(Boolean, nullable=True)

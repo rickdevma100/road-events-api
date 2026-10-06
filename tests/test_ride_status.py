@@ -8,29 +8,29 @@ def get_auth_headers():
 def test_ride_status_normal_flow(client):
     ride_id = str(uuid.uuid4())
 
-    # 1. Ride starts (moving at 30 km/h) -> desired mode green
+    # 1. Ride starts (starting state) -> desired mode yellow (base color)
     now = datetime.now(timezone.utc)
     payload1 = {
         "sequence": 1,
         "observed_at": now.isoformat(),
         "ride_state": "active",
-        "speed_kmh": 30.0,
+        "speed_kmh": 0.0,
         "last_valid_speed_at": now.isoformat(),
-        "motion_state": "moving",
+        "motion_state": "starting",
         "incident": None
     }
     res1 = client.put(f"/api/v1/rides/{ride_id}/status", json=payload1, headers=get_auth_headers())
     assert res1.status_code == 200
     assert res1.json()["accepted_sequence"] == 1
-    assert res1.json()["desired_mode"] == "green"
+    assert res1.json()["desired_mode"] == "yellow"
 
-    # 2. Slow down (< 25 km/h) -> desired mode yellow
+    # 2. Cruising / Slow (< 35 km/h) -> desired mode yellow (base color)
     now = datetime.now(timezone.utc)
     payload2 = {
         "sequence": 2,
         "observed_at": now.isoformat(),
         "ride_state": "active",
-        "speed_kmh": 15.0,
+        "speed_kmh": 25.0,
         "last_valid_speed_at": now.isoformat(),
         "motion_state": "slow",
         "incident": None
@@ -40,10 +40,43 @@ def test_ride_status_normal_flow(client):
     assert res2.json()["accepted_sequence"] == 2
     assert res2.json()["desired_mode"] == "yellow"
 
-    # 3. Stop -> desired mode red
+    # 3. High speed (> 35 km/h) -> desired mode green
     now = datetime.now(timezone.utc)
     payload3 = {
         "sequence": 3,
+        "observed_at": now.isoformat(),
+        "ride_state": "active",
+        "speed_kmh": 42.0,
+        "last_valid_speed_at": now.isoformat(),
+        "motion_state": "moving",
+        "incident": None
+    }
+    res3 = client.put(f"/api/v1/rides/{ride_id}/status", json=payload3, headers=get_auth_headers())
+    assert res3.status_code == 200
+    assert res3.json()["accepted_sequence"] == 3
+    assert res3.json()["desired_mode"] == "green"
+
+    # 4. Sudden jerk / acceleration event while moving -> desired mode red
+    now = datetime.now(timezone.utc)
+    payload4 = {
+        "sequence": 4,
+        "observed_at": now.isoformat(),
+        "ride_state": "active",
+        "speed_kmh": 42.0,
+        "last_valid_speed_at": now.isoformat(),
+        "motion_state": "moving",
+        "incident": None,
+        "event_active": True
+    }
+    res4 = client.put(f"/api/v1/rides/{ride_id}/status", json=payload4, headers=get_auth_headers())
+    assert res4.status_code == 200
+    assert res4.json()["accepted_sequence"] == 4
+    assert res4.json()["desired_mode"] == "red"
+
+    # 5. Bike stops -> desired mode red
+    now = datetime.now(timezone.utc)
+    payload5 = {
+        "sequence": 5,
         "observed_at": now.isoformat(),
         "ride_state": "active",
         "speed_kmh": 0.0,
@@ -51,15 +84,15 @@ def test_ride_status_normal_flow(client):
         "motion_state": "stopped",
         "incident": None
     }
-    res3 = client.put(f"/api/v1/rides/{ride_id}/status", json=payload3, headers=get_auth_headers())
-    assert res3.status_code == 200
-    assert res3.json()["accepted_sequence"] == 3
-    assert res3.json()["desired_mode"] == "red"
+    res5 = client.put(f"/api/v1/rides/{ride_id}/status", json=payload5, headers=get_auth_headers())
+    assert res5.status_code == 200
+    assert res5.json()["accepted_sequence"] == 5
+    assert res5.json()["desired_mode"] == "red"
 
-    # 4. End ride -> desired mode restore_off
+    # 6. End ride -> desired mode restore_off
     now = datetime.now(timezone.utc)
-    payload4 = {
-        "sequence": 4,
+    payload6 = {
+        "sequence": 6,
         "observed_at": now.isoformat(),
         "ride_state": "ended",
         "speed_kmh": 0.0,
@@ -67,10 +100,11 @@ def test_ride_status_normal_flow(client):
         "motion_state": "stopped",
         "incident": None
     }
-    res4 = client.put(f"/api/v1/rides/{ride_id}/status", json=payload4, headers=get_auth_headers())
-    assert res4.status_code == 200
-    assert res4.json()["accepted_sequence"] == 4
-    assert res4.json()["desired_mode"] == "restore_off"
+    res6 = client.put(f"/api/v1/rides/{ride_id}/status", json=payload6, headers=get_auth_headers())
+    assert res6.status_code == 200
+    assert res6.json()["accepted_sequence"] == 6
+    assert res6.json()["desired_mode"] == "restore_off"
+
 
 def test_ride_status_monotonic_sequence(client):
     ride_id = str(uuid.uuid4())
